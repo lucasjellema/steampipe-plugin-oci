@@ -265,17 +265,21 @@ func listContainerInstances(ctx context.Context, d *plugin.QueryData, _ *plugin.
 //// HYDRATE FUNCTIONS
 
 type ContainerDetails struct {
+	DisplayName                  string
 	ImageUrl                     string
 	ExitCode                     int
 	WorkingDirectory             string
 	ContainerRestartAttemptCount int
+	VcpusLimit                   float32
+	MemoryLimitInGBs             float32
+	TimeTerminated               oci_common.SDKTime
+	TimeCreated                  oci_common.SDKTime
+	TimeUpdated                  oci_common.SDKTime
 }
 
 type ContainerInstanceContainers struct {
 	Containers []ContainerDetails
 }
-
-
 
 func getContainerInstanceContainers(ctx context.Context, d *plugin.QueryData, h *plugin.HydrateData) (interface{}, error) {
 	plugin.Logger(ctx).Trace("getContainerInstanceContainers")
@@ -286,7 +290,7 @@ func getContainerInstanceContainers(ctx context.Context, d *plugin.QueryData, h 
 
 	region := plugin.GetMatrixItem(ctx)[matrixKeyRegion].(string)
 	compartment := plugin.GetMatrixItem(ctx)[matrixKeyCompartment].(string)
-	logger.Debug("getContainerInstance", "Compartment", compartment, "OCI_REGION", region)
+	logger.Debug("getContainerInstanceContainers", "Compartment", compartment, "OCI_REGION", region)
 	// Create Session
 	session, err := containerInstancesService(ctx, d, region)
 	if err != nil {
@@ -296,30 +300,43 @@ func getContainerInstanceContainers(ctx context.Context, d *plugin.QueryData, h 
 	containerInstanceContainers := ContainerInstanceContainers{}
 	numberOfContainers := len(containerInstance.Containers)
 	containerInstanceContainers.Containers = make([]ContainerDetails, numberOfContainers)
-	logger.Error("made array  ")
+	for idx, container := range containerInstance.Containers {
+		var containerId string
+		containerId = *container.ContainerId
+		crequest := containerinstances.GetContainerRequest{
+			ContainerId: types.String(containerId),
+			RequestMetadata: oci_common.RequestMetadata{
+				RetryPolicy: getDefaultRetryPolicy(d.Connection),
+			},
+		}
+		cresponse, _ := session.ContainerInstancesClient.GetContainer(ctx, crequest)
 
-	// TODO for each container in the instance, fetch the details (instead of such for one)
-	var containerId string
-	containerId = *containerInstance.Containers[0].ContainerId
-	logger.Error("set contasinerId  " + containerId)
-	crequest := containerinstances.GetContainerRequest{
-		ContainerId: types.String(containerId),
-		RequestMetadata: oci_common.RequestMetadata{
-			RetryPolicy: getDefaultRetryPolicy(d.Connection),
-		},
+		containerDetails := ContainerDetails{}
+		containerDetails.DisplayName = *cresponse.DisplayName
+		containerDetails.ImageUrl = *cresponse.ImageUrl
+		if cresponse.WorkingDirectory != nil {
+			containerDetails.WorkingDirectory = *cresponse.WorkingDirectory
+		}
+		if cresponse.TimeUpdated != nil {
+			containerDetails.TimeUpdated = *cresponse.TimeUpdated
+		}
+		if cresponse.TimeCreated != nil {
+			containerDetails.TimeCreated = *cresponse.TimeCreated
+		}
+		if cresponse.TimeTerminated != nil {
+			containerDetails.TimeTerminated = *cresponse.TimeTerminated
+		}
+		if cresponse.ResourceConfig != nil {
+			if cresponse.ResourceConfig.MemoryLimitInGBs != nil {
+				containerDetails.MemoryLimitInGBs = *cresponse.ResourceConfig.MemoryLimitInGBs
+			}
+			if cresponse.ResourceConfig.VcpusLimit != nil {
+				containerDetails.VcpusLimit = *cresponse.ResourceConfig.VcpusLimit
+			}
+		}
+		containerDetails.ContainerRestartAttemptCount = *cresponse.ContainerRestartAttemptCount
+		containerInstanceContainers.Containers[idx] = containerDetails
 	}
-	cresponse, err := session.ContainerInstancesClient.GetContainer(ctx, crequest)
-	logger.Error("made req  ", err)
-
-	container := ContainerDetails{}
-	container.ImageUrl = *cresponse.ImageUrl
-	container.ContainerRestartAttemptCount = *cresponse.ContainerRestartAttemptCount
-
-	logger.Error("go set first conta  ")
-
-	containerInstanceContainers.Containers[0] = container
-	logger.Error("return containerinstance details ")
-
 	return containerInstanceContainers, nil
 }
 
