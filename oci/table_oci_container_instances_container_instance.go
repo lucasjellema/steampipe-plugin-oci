@@ -2,6 +2,8 @@ package oci
 
 import (
 	"context"
+	"encoding/json"
+	"strconv"
 	"strings"
 
 	oci_common "github.com/oracle/oci-go-sdk/v65/common"
@@ -24,8 +26,14 @@ func tableContainerInstancesContainerInstance(_ context.Context) *plugin.Table {
 		DefaultTransform: transform.FromCamel(),
 		Get: &plugin.GetConfig{
 			KeyColumns: plugin.SingleColumn("id"),
-			Hydrate:    getQueue,
+			Hydrate:    getContainerInstanceDetails,
 		},
+		HydrateDependencies: []plugin.HydrateDependencies{
+            {
+                Func:    getSomething,
+                Depends: []plugin.HydrateFunc{getContainerInstanceDetails},
+            },
+        },
 		List: &plugin.ListConfig{
 			Hydrate: listContainerInstances,
 			KeyColumns: []*plugin.KeyColumn{
@@ -62,7 +70,55 @@ func tableContainerInstancesContainerInstance(_ context.Context) *plugin.Table {
 			},
 			{
 				Name:        "availability_domain",
-				Description: "Availability Domain where the ContainerInstance is running..",
+				Description: "Availability Domain where the ContainerInstance is running.",
+				Type:        proto.ColumnType_STRING,
+			},
+			{
+				Name:        "shape",
+				Description: "The shape of the Container Instance. The shape determines the resources available to the Container Instance.",
+				Type:        proto.ColumnType_STRING,
+			},
+			// {
+			// 	Name:        "ocpus",
+			// 	Description: "The total number of OCPUs available to the instance.",
+			// 	Type:        proto.ColumnType_DOUBLE,
+			// 	Format : transform.From(transformNotificationTopic),
+			// },
+			// {
+			// 	Name:        "memory_in_gbs",
+			// 	Description: "The total amount of memory available to the instance, in gigabytes.",
+			// 	Type:        proto.ColumnType_DOUBLE,
+			// },
+			// {
+			// 	Name:        "processor_description",
+			// 	Description: "A short description of the instance's processor (CPU).",
+			// 	Type:        proto.ColumnType_STRING,
+			// },
+			// {
+			// 	Name:        "networking_bandwidth_in_gbps",
+			// 	Description: "The networking bandwidth available to the instance, in gigabits per second.",
+			// 	Type:        proto.ColumnType_DOUBLE,
+			// },
+			{
+				Name:        "container_count",
+				Description: "The number of containers running on the instance",
+				Type:        proto.ColumnType_INT,
+			},
+			{
+				Name:        "containers",
+				Description: "Details on all containers in the instance - such as image, restart attempts, working directory.",
+				Type:        proto.ColumnType_JSON,
+				Transform:   transform.From(transformContainers),
+				Hydrate:     plugin.HydrateFunc(getContainerInstanceDetails),
+
+			},			{
+				Name:        "container_restart_policy",
+				Description: "Container Restart Policy",
+				Type:        proto.ColumnType_STRING,
+			},
+			{
+				Name:        "fault_domain",
+				Description: "Fault Domain where the ContainerInstance is running.",
 				Type:        proto.ColumnType_STRING,
 			},
 			{
@@ -86,6 +142,23 @@ func tableContainerInstancesContainerInstance(_ context.Context) *plugin.Table {
 				Name:        "graceful_shutdown_timeout_in_seconds",
 				Description: "The retention period of the messages in the queue, in seconds.",
 				Type:        proto.ColumnType_INT,
+			},
+			{
+				Name:        "volume_count",
+				Description: "The number of volumes that attached to this Instance.",
+				Type:        proto.ColumnType_INT,
+			},
+			{
+				Name:        "summary",
+				Description: "First container image name.",
+				Type:        proto.ColumnType_STRING,
+				Hydrate:     plugin.HydrateFunc(getContainerInstanceDetails),
+			},
+			{
+				Name:        "hydra",
+				Description: "First container image name.",
+				Type:        proto.ColumnType_STRING,
+				Hydrate:     plugin.HydrateFunc(getSomething),
 			},
 
 			// tags
@@ -206,7 +279,39 @@ func listContainerInstances(ctx context.Context, d *plugin.QueryData, _ *plugin.
 
 //// HYDRATE FUNCTIONS
 
-func getContainerInstance(ctx context.Context, d *plugin.QueryData, h *plugin.HydrateData) (interface{}, error) {
+
+type ContainerDetails struct {
+	ImageUrl string
+	ExitCode int
+	WorkingDirectory string
+	ContainerRestartAttemptCount int
+}
+
+type ContainerInstanceDetails struct {
+	Summary string
+	Containers []ContainerDetails
+}
+
+
+type HydraThing struct {
+	Hydra string
+}
+
+func getSomething(ctx context.Context, d *plugin.QueryData, h *plugin.HydrateData) (interface{}, error) {
+	// retrieve the ContainerInstanceDetails already produced by Get - to use it for retrieving more container details
+	containerInstanceDetails := h.HydrateResults["getContainerInstanceDetails"].(ContainerInstanceDetails)
+
+	plugin.Logger(ctx).Error("getSomething")
+	plugin.Logger(ctx).Error("ciontainer instance "+containerInstanceDetails.Summary)
+	
+	hydraThing := HydraThing{}
+	hydraThing.Hydra = "OLLAA "+ containerInstanceDetails.Summary
+	return hydraThing,nil
+
+}
+
+
+func getContainerInstanceDetails(ctx context.Context, d *plugin.QueryData, h *plugin.HydrateData) (interface{}, error) {
 	plugin.Logger(ctx).Trace("getContainerInstance")
 	logger := plugin.Logger(ctx)
 	region := plugin.GetMatrixItem(ctx)[matrixKeyRegion].(string)
@@ -245,8 +350,38 @@ func getContainerInstance(ctx context.Context, d *plugin.QueryData, h *plugin.Hy
 		logger.Error("oci_container_instances_container_instance.getContainerInstance", "api_error", err)
 		return nil, err
 	}
+    numberOfContainers := len(response.Containers)
+	logger.Error("number of containers "+strconv.Itoa(numberOfContainers))
+	containerInstanceDetails := ContainerInstanceDetails{}
+	containerInstanceDetails.Summary = *response.Containers[0].DisplayName 
+	logger.Error("summary  "+containerInstanceDetails.Summary)
 
-	return response.ContainerInstance, nil
+	containerInstanceDetails.Containers = make([]ContainerDetails,numberOfContainers)
+	logger.Error("made array  ")
+	
+
+	// TODO for each container in the instance, fetch the details (instead of such for one)
+	var containerId  string
+	containerId = *response.Containers[0].ContainerId
+	logger.Error("set contasinerId  "+containerId)
+	crequest := containerinstances.GetContainerRequest{
+		ContainerId:   types.String(containerId),
+		RequestMetadata: oci_common.RequestMetadata{
+			RetryPolicy: getDefaultRetryPolicy(d.Connection),
+		},
+	}
+	cresponse, err := session.ContainerInstancesClient.GetContainer(ctx, crequest)
+	logger.Error("made req  ",err)
+
+	container := ContainerDetails{}
+	container.ImageUrl = *cresponse.ImageUrl
+	container.ContainerRestartAttemptCount = *cresponse.ContainerRestartAttemptCount
+
+	logger.Error("go set first conta  ")
+
+	containerInstanceDetails.Containers[0] = container
+		logger.Error("return containerinstance details ")
+	return containerInstanceDetails, nil
 }
 
 // Build additional filters
@@ -298,4 +433,16 @@ func containerInstanceTags(ctx context.Context, d *transform.TransformData) (int
 	}
 
 	return tags, nil
+}
+
+// produce a valid JSON representation of the slice of containers 
+func transformContainers(_ context.Context, d *transform.TransformData) (interface{}, error) {
+	releaseNote := d.HydrateItem.(ContainerInstanceDetails)
+	containers := releaseNote.Containers
+	containersJSON, err := json.Marshal(containers)
+	if err != nil {
+		return nil, err
+	}
+
+	return string(containersJSON), nil
 }
