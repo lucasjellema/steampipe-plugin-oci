@@ -77,26 +77,27 @@ func tableContainerInstancesContainerInstance(_ context.Context) *plugin.Table {
 				Description: "The shape of the Container Instance. The shape determines the resources available to the Container Instance.",
 				Type:        proto.ColumnType_STRING,
 			},
-			// {
-			// 	Name:        "ocpus",
-			// 	Description: "The total number of OCPUs available to the instance.",
-			// 	Type:        proto.ColumnType_DOUBLE,
-			// },
-			// {
-			// 	Name:        "memory_in_gbs",
-			// 	Description: "The total amount of memory available to the instance, in gigabytes.",
-			// 	Type:        proto.ColumnType_DOUBLE,
-			// },
-			// {
-			// 	Name:        "processor_description",
-			// 	Description: "A short description of the instance's processor (CPU).",
-			// 	Type:        proto.ColumnType_STRING,
-			// },
-			// {
-			// 	Name:        "networking_bandwidth_in_gbps",
-			// 	Description: "The networking bandwidth available to the instance, in gigabits per second.",
-			// 	Type:        proto.ColumnType_DOUBLE,
-			// },
+			{
+				Name:        "ocpus",
+				Description: "The total number of OCPUs available to the instance.",
+				Type:        proto.ColumnType_DOUBLE,
+			},
+			{
+				Name:        "memory_in_gbs",
+				Description: "The total amount of memory available to the instance, in gigabytes.",
+				Type:        proto.ColumnType_DOUBLE,
+			},
+			{
+				Name:        "processor_description",
+				Description: "A short description of the instance's processor (CPU).",
+				Type:        proto.ColumnType_STRING,
+			},
+			{
+				Name:        "networking_bandwidth_in_gbps",
+				Description: "The networking bandwidth available to the instance, in gigabits per second.",
+				Type:        proto.ColumnType_DOUBLE,
+				Hydrate:     plugin.HydrateFunc(getContainerInstanceDetails),
+			},
 			{
 				Name:        "container_count",
 				Description: "The number of containers running on the instance",
@@ -264,6 +265,14 @@ func listContainerInstances(ctx context.Context, d *plugin.QueryData, _ *plugin.
 
 //// HYDRATE FUNCTIONS
 
+type ContainerInstanceInfo struct {
+	containerinstances.ContainerInstance
+	NetworkingBandwidthInGbps float32
+	ProcessorDescription string
+	Ocpus float32
+	MemoryInGBs float32
+}
+
 type ContainerDetails struct {
 	DisplayName                  string
 	ImageUrl                     string
@@ -286,7 +295,8 @@ func getContainerInstanceContainers(ctx context.Context, d *plugin.QueryData, h 
 	logger := plugin.Logger(ctx)
 
 	// retrieve the ContainerInstanceDetails already produced by Get - to use it for retrieving more container details
-	containerInstance := h.HydrateResults["getContainerInstanceDetails"].(containerinstances.ContainerInstance)
+	containerInstanceInfo := h.HydrateResults["getContainerInstanceDetails"].(ContainerInstanceInfo)
+	containerInstance := containerInstanceInfo.ContainerInstance
 
 	region := plugin.GetMatrixItem(ctx)[matrixKeyRegion].(string)
 	compartment := plugin.GetMatrixItem(ctx)[matrixKeyCompartment].(string)
@@ -301,8 +311,7 @@ func getContainerInstanceContainers(ctx context.Context, d *plugin.QueryData, h 
 	numberOfContainers := len(containerInstance.Containers)
 	containerInstanceContainers.Containers = make([]ContainerDetails, numberOfContainers)
 	for idx, container := range containerInstance.Containers {
-		var containerId string
-		containerId = *container.ContainerId
+		containerId := *container.ContainerId
 		crequest := containerinstances.GetContainerRequest{
 			ContainerId: types.String(containerId),
 			RequestMetadata: oci_common.RequestMetadata{
@@ -379,8 +388,15 @@ func getContainerInstanceDetails(ctx context.Context, d *plugin.QueryData, h *pl
 		logger.Error("oci_container_instances_container_instance.getContainerInstance", "api_error", err)
 		return nil, err
 	}
-	containerInstance := response.ContainerInstance
-	return containerInstance, nil
+	//	containerInstance := response.ContainerInstance
+	containerInstanceInfo := ContainerInstanceInfo{}
+	containerInstanceInfo.ContainerInstance = response.ContainerInstance
+	
+	containerInstanceInfo.NetworkingBandwidthInGbps = *containerInstanceInfo.ContainerInstance.ShapeConfig.NetworkingBandwidthInGbps
+	containerInstanceInfo.MemoryInGBs = *containerInstanceInfo.ContainerInstance.ShapeConfig.MemoryInGBs
+	containerInstanceInfo.Ocpus = *containerInstanceInfo.ContainerInstance.ShapeConfig.Ocpus
+	containerInstanceInfo.ProcessorDescription = *containerInstanceInfo.ContainerInstance.ShapeConfig.ProcessorDescription
+	return containerInstanceInfo, nil
 }
 
 // Build additional filters
